@@ -97,6 +97,80 @@ async function chat(cfg, options, attempts = 2) {
   throw new Error(describeFailure(lastError, cfg))
 }
 
+/* ------------------------------------------------------- model inventory */
+
+/**
+ * Read the installed-model inventory. `/api/tags` already carries family,
+ * parameter count, quantization, context length and capabilities, so one
+ * request answers "what can I run here?" without probing every model.
+ */
+async function fetchInventory(cfg, signal) {
+  const response = await fetch(endpoint(cfg, '/api/tags'), { signal })
+  if (!response.ok) throw new Error(`读取模型清单失败：HTTP ${response.status}`)
+  const payload = await response.json()
+  return Array.isArray(payload?.models) ? payload.models : []
+}
+
+/** Hints derived only from published metadata — never from a guess about quality. */
+function inferRoles(entry) {
+  const name = String(entry?.name ?? '').toLowerCase()
+  const family = String(entry?.details?.family ?? '').toLowerCase()
+  const capabilities = Array.isArray(entry?.capabilities) ? entry.capabilities : []
+  const roles = []
+  if (capabilities.includes('tools')) roles.push('tools')
+  if (capabilities.includes('insert')) roles.push('fill-in-middle')
+  if (/(^|[^a-z])(coder|code)/.test(name) || /code/.test(family)) roles.push('code')
+  if (/r1|reason|think|reasoner/.test(name)) roles.push('reasoning')
+  if (/embed|bge|nomic|e5-/.test(name)) roles.push('embedding')
+  if (/llava|vision|[^a-z]vl([^a-z]|$)|minicpm-v|gemma3|qwen2\.5-vl/.test(name)) roles.push('vision')
+  const context = Number(entry?.details?.context_length ?? 0)
+  if (context >= 32768) roles.push('long-context')
+  const size = Number(entry?.size ?? 0)
+  if (size > 0 && size < 2_000_000_000) roles.push('small-footprint')
+  return roles
+}
+
+function summarizeModel(entry) {
+  const details = entry?.details ?? {}
+  return {
+    name: String(entry?.name ?? entry?.model ?? ''),
+    family: String(details.family ?? ''),
+    parameters: String(details.parameter_size ?? ''),
+    quantization: String(details.quantization_level ?? ''),
+    contextLength: Number(details.context_length ?? 0),
+    capabilities: Array.isArray(entry?.capabilities) ? entry.capabilities.map(String) : [],
+    roles: inferRoles(entry),
+    sizeBytes: Number(entry?.size ?? 0),
+    modifiedAt: String(entry?.modified_at ?? ''),
+  }
+}
+
+/** One model's full record from `/api/show`, trimmed to what a chooser needs. */
+async function showModel(cfg, model, signal) {
+  const response = await fetch(endpoint(cfg, '/api/show'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model }),
+    signal,
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`读取模型 ${model} 详情失败：HTTP ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ''}`)
+  }
+  const payload = await response.json()
+  const info = payload?.model_info ?? {}
+  const contextKey = Object.keys(info).find((key) => key.endsWith('.context_length'))
+  return {
+    name: model,
+    family: String(payload?.details?.family ?? ''),
+    parameters: String(payload?.details?.parameter_size ?? ''),
+    quantization: String(payload?.details?.quantization_level ?? ''),
+    contextLength: Number(contextKey ? info[contextKey] : 0),
+    capabilities: Array.isArray(payload?.capabilities) ? payload.capabilities.map(String) : [],
+    system: String(payload?.system ?? '').slice(0, 400),
+  }
+}
+
 /* ------------------------------------------------------- deterministic QA */
 
 function stripFence(text) {
@@ -280,6 +354,171 @@ function askTool(cfg) {
   }
 }
 
+function modelsTool(cfg) {
+  return {
+    name: 'ollama_models',
+    description:
+      'List the Ollama models installed on this machine with the facts needed to choose one: family, parameter count, quantization, context length and supported capabilities, plus `roles` hints derived only from that metadata. Call it before picking a model for a job and before describing what the local models can do. `roles` are metadata hints, not measured quality.',
+    parameters: {
+      type: 'object',
+      properties: {
+        model: {
+          type: 'string',
+          description: 'Return one model\'s full record instead of the list; use a name this machine reports.',
+        },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          baseURL: { type: 'string' },
+          count: { type: 'integer' },
+          models: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                family: { type: 'string' },
+                parameters: { type: 'string' },
+                quantization: { type: 'string' },
+                contextLength: { type: 'integer' },
+                capabilities: { type: 'array', items: { type: 'string' } },
+                roles: { type: 'array', items: { type: 'string' } },
+                sizeBytes: { type: 'integer' },
+                modifiedAt: { type: 'string' },
+              },
+              required: ['name', 'roles'],
+            },
+          },
+          detail: { type: 'object' },
+        },
+        required: ['baseURL', 'count', 'models'],
+      },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    async execute(args, exec) {
+      if (typeof args.model === 'string' && args.model.length > 0) {
+        const detail = await showModel(cfg, args.model, exec.signal)
+        return { baseURL: cfg.baseURL, count: 1, models: [], detail: { ...detail, roles: inferRoles({ name: detail.name, details: { family: detail.family, context_length: detail.contextLength } }) } }
+      }
+      const inventory = await fetchInventory(cfg, exec.signal)
+      const models = inventory.map(summarizeModel)
+      return { baseURL: cfg.baseURL, count: models.length, models }
+    },
+  }
+}
+
+function lookupTool(cfg, ctx) {
+  return {
+    name: 'ollama_lookup',
+    description:
+      'Look up how a model actually performs when this machine\'s metadata is not enough — for example its benchmarks, known weaknesses, or which tasks it is good at. Every call asks the user to approve the exact queries first and returns approved:false when they decline, so treat an unapproved result as not run. Use it only after ollama_models, and only for models that are actually installed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'What you need to learn, in one sentence. Shown to the user for approval.' },
+        queries: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'One to four literal search queries, also shown to the user for approval.',
+        },
+        max_results: {
+          type: 'integer',
+          description: 'Results kept per query, 1 to 6 (default 4).',
+        },
+      },
+      required: ['question', 'queries'],
+      additionalProperties: false,
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          approved: { type: 'boolean' },
+          sources: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                url: { type: 'string' },
+                title: { type: 'string' },
+                snippet: { type: 'string' },
+              },
+              required: ['url'],
+            },
+          },
+          notes: { type: 'string' },
+        },
+        required: ['approved', 'sources'],
+      },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    },
+    async execute(args, exec) {
+      const queries = (Array.isArray(args.queries) ? args.queries : []).map(String).filter((q) => q.trim()).slice(0, 4)
+      if (queries.length === 0) throw new Error('ollama_lookup：queries 不能为空')
+
+      const userQuestions = ctx.get?.('userQuestions') ?? ctx.userQuestions
+      if (typeof userQuestions?.ask !== 'function') {
+        return {
+          approved: false,
+          sources: [],
+          notes: '本机没有可用的提问服务，无法取得你的批准，因此没有发起查询。需要这些信息时请直接调用 web_search。',
+        }
+      }
+
+      const answer = await userQuestions.ask({
+        questions: [
+          {
+            id: 'approve-ollama-lookup',
+            header: '需要联网查询',
+            question: `${args.question}\n\n将向搜索服务发送：${queries.map((q) => `「${q}」`).join('、')}`,
+            options: [
+              { label: '允许查询', description: '只发送上面列出的查询，结果只用于总结模型能力。' },
+              { label: '不要查询', description: '跳过联网，只根据本机元数据判断。' },
+            ],
+          },
+        ],
+        ...(exec.agent !== undefined ? { agent: exec.agent } : {}),
+        ...(exec.signal !== undefined ? { signal: exec.signal } : {}),
+      })
+
+      const selected = answer?.answers?.[0]?.selected?.[0] ?? answer?.answers?.[0]?.custom ?? ''
+      if (selected !== '允许查询') {
+        return { approved: false, sources: [], notes: '用户没有批准这次联网查询，因此没有发送任何请求。' }
+      }
+
+      const web = ctx.get?.('web') ?? ctx.web
+      if (typeof web?.search !== 'function') {
+        return { approved: true, sources: [], notes: '本机没有挂载可用的 web 搜索服务，批准后仍无法查询。' }
+      }
+
+      const maxResults = Math.max(1, Math.min(6, Number(args.max_results) || 4))
+      const seen = new Set()
+      const sources = []
+      for (const query of queries) {
+        const result = await web.search({ query, maxResults }, exec.signal)
+        for (const source of result?.sources ?? []) {
+          if (!source?.url || seen.has(source.url)) continue
+          seen.add(source.url)
+          sources.push({
+            url: String(source.url),
+            title: String(source.title ?? ''),
+            snippet: String(source.snippet ?? '').slice(0, 300),
+          })
+        }
+      }
+      return {
+        approved: true,
+        sources: sources.slice(0, maxResults * queries.length),
+        notes: `${queries.length} 条查询，${sources.length} 个去重来源。摘要由你自己写，不要照抄片段。`,
+      }
+    },
+  }
+}
+
 function batchTool(cfg, ctx) {
   return {
     name: 'ollama_batch',
@@ -380,6 +619,14 @@ function batchTool(cfg, ctx) {
             `ollama_batch: 拒绝写入工作区之外：${outputTarget}（工作区 ${root}）。请把 output_path 指到工作区内。`,
           )
         }
+      }
+
+      // Fail before doing any work when the tag does not exist, and say what does.
+      const installed = (await fetchInventory(cfg, exec.signal)).map((entry) => String(entry?.name ?? ''))
+      if (!installed.includes(model)) {
+        throw new Error(
+          `ollama_batch: 本机没有模型 ${JSON.stringify(model)}。已安装：${installed.join(', ') || '(none)'}。先调用 ollama_models 选择模型。`,
+        )
       }
 
       const concurrency = Math.max(1, Math.min(8, Number(args.concurrency) || cfg.concurrency || 2))
@@ -483,6 +730,8 @@ export function apply(ctx, config = {}) {
     concurrency: config.concurrency ?? DEFAULTS.concurrency,
     timeoutMs: config.timeoutMs ?? DEFAULTS.timeoutMs,
   }
+  ctx.tools.register(modelsTool(cfg))
   ctx.tools.register(askTool(cfg))
   ctx.tools.register(batchTool(cfg, ctx))
+  ctx.tools.register(lookupTool(cfg, ctx))
 }

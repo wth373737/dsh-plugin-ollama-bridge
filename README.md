@@ -2,14 +2,23 @@
 
 把「大量、低难度、长文本」的活交给本机 Ollama，主模型只做调度与复核。
 
-> DeepSeek Harness 插件：注册两个工具，让本地模型承担批量长文本作业。长文本不进入对话上下文，只有条数、失败分布和抽样片段回流，因此省的是主干 token。
+> DeepSeek Harness 插件：注册四个工具，覆盖「看清本机模型 → 单次试问 → 批量长文本 → 必要时联网补料」。长文本不进入对话上下文，只有条数、失败分布和抽样片段回流，因此省的是主干 token。
 
 ## 工具
 
 | 工具 | 用途 |
 | --- | --- |
+| `ollama_models` | 列出本机模型：参数量、量化、上下文、能力，以及 `roles` 线索（`code` / `reasoning` / `vision` / `embedding` / `long-context` …） |
 | `ollama_ask` | 单次提问，结果**未经验证**，适合试探或少量高价值判断 |
 | `ollama_batch` | 切块 + 并发 + 重试 + 全量确定性校验 + 抽样回传 + 落盘 |
+| `ollama_lookup` | 联网查询模型能力，**每次调用都要用户先批准查询原文** |
+
+## 推荐流程：先看清模型，再决定用哪个
+
+1. 调 `ollama_models` 拿到清单与元数据线索；
+2. 由主模型据此总结「每个模型适合干什么」，`roles` 只是元数据推断，不是实测结论；
+3. 元数据不够（要比较基准、已知短板）时，调 `ollama_lookup` —— 它会把要发的查询原文交给用户批准，拒绝则返回 `approved: false` 且不联网；
+4. 选定模型后跑 `ollama_batch`。模型名不存在会立刻失败并列出可用模型。
 
 `ollama_batch` 的返回值只有：条数、通过/失败数、失败原因计数、最多 20 条失败摘要、1–3% 抽样原文。源文本始终留在插件进程里。
 
@@ -23,12 +32,6 @@
 github:wth373737/dsh-plugin-ollama-bridge
 ```
 
-或命令行：
-
-```bash
-pnpm add github:wth373737/dsh-plugin-ollama-bridge
-```
-
 **从本地目录**
 
 ```bash
@@ -39,7 +42,7 @@ pnpm add file:/path/to/dsh-plugin-ollama-bridge
 
 ## 配置
 
-`cordis.patch.yml` 的 `config` 段，安装后可直接改：
+`cordis.patch.yml` 的 `config` 段：
 
 ```yaml
 baseURL: http://127.0.0.1:11434
@@ -69,12 +72,13 @@ timeoutMs: 180000
 
 - **读**：任意绝对路径（由宿主进程权限决定）。
 - **写**：仅会话工作区内。越界请求直接拒绝并返回工作区根；解析不到工作区时拒绝写入而不是猜。
-- **网络**：只访问配置的 `baseURL`，不做其他出站请求。
+- **网络**：只访问配置的 `baseURL`；`ollama_lookup` 经用户批准后才会调用宿主已配置的搜索服务。
+- **审批**：没有可用的提问服务时，`ollama_lookup` 直接拒绝联网，而不是静默跳过审批。
 
 ## 开发
 
 ```bash
-npm test     # 离线冒烟测试：桩掉 fetch，校验检查/抽样/标注/写边界
+npm test     # 离线冒烟测试：桩掉 fetch/web/userQuestions，校验检查/抽样/标注/写边界/审批门
 ```
 
 测试不需要 Ollama，也不会写入工作区之外。
