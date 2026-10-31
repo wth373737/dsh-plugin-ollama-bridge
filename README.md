@@ -1,48 +1,50 @@
 # dsh-plugin-ollama-bridge
 
-把「大量、低难度、长文本」的活交给本机 Ollama，主模型只做调度与复核。
+**English** | [简体中文](README.zh.md)
 
-> DeepSeek Harness 插件：注册四个工具，覆盖「看清本机模型 → 单次试问 → 批量长文本 → 必要时联网补料」。长文本不进入对话上下文，只有条数、失败分布和抽样片段回流，因此省的是主干 token。
+Hand the bulk low-difficulty long-text work to the Ollama models on this machine, and keep the leading model on scheduling and review.
 
-## 工具
+> A DeepSeek Harness plugin that registers four tools covering the whole loop: see what is installed → try one call → run a batch over long text → fill metadata gaps over the web when needed. Long source text never enters the conversation: only counts, failure distribution and a review sample come back, so the saving is on main-model tokens.
 
-| 工具 | 用途 |
+## Tools
+
+| Tool | What it does |
 | --- | --- |
-| `ollama_models` | 列出本机模型：参数量、量化、上下文、能力，以及 `roles` 线索（`code` / `reasoning` / `vision` / `embedding` / `long-context` …） |
-| `ollama_ask` | 单次提问，结果**未经验证**，适合试探或少量高价值判断 |
-| `ollama_batch` | 切块 + 并发 + 重试 + 全量确定性校验 + 抽样回传 + 落盘 |
-| `ollama_lookup` | 联网查询模型能力，**每次调用都要用户先批准查询原文** |
+| `ollama_models` | Lists installed models with parameter count, quantization, context length, capabilities, and `roles` hints (`code` / `reasoning` / `vision` / `embedding` / `long-context` …) |
+| `ollama_ask` | One question, **unverified answer** — for probes or a few high-value judgements |
+| `ollama_batch` | Chunking + concurrency + retries + a deterministic check on every item + review sample + optional result file |
+| `ollama_lookup` | Web lookup of model capability, **after the user approves the exact queries** |
 
-## 推荐流程：先看清模型，再决定用哪个
+## Recommended flow: look before you choose
 
-1. 调 `ollama_models` 拿到清单与元数据线索；
-2. 由主模型据此总结「每个模型适合干什么」，`roles` 只是元数据推断，不是实测结论；
-3. 元数据不够（要比较基准、已知短板）时，调 `ollama_lookup` —— 它会把要发的查询原文交给用户批准，拒绝则返回 `approved: false` 且不联网；
-4. 选定模型后跑 `ollama_batch`。模型名不存在会立刻失败并列出可用模型。
+1. Call `ollama_models` for the inventory and metadata hints.
+2. Summarise what each model is good for. `roles` are metadata hints, not measured quality.
+3. When metadata is not enough (benchmarks, known weaknesses), call `ollama_lookup` — it hands the exact queries to the user for approval, and returns `approved: false` without searching when they decline.
+4. Run `ollama_batch` with the chosen tag. An unknown tag fails immediately and names the installed models.
 
-`ollama_batch` 的返回值只有：条数、通过/失败数、失败原因计数、最多 20 条失败摘要、1–3% 抽样原文。源文本始终留在插件进程里。
+`ollama_batch` returns only: item count, passed/failed, failure-reason counts, at most 20 failure snippets, and the 1–3% sample verbatim. The source text stays inside the plugin process.
 
-## 安装
+## Install
 
-**从 GitHub（推荐，可更新）**
+**From GitHub (recommended, updatable)**
 
-在 DSH 界面「插件 → + 添加插件」里填：
+In DSH, open **Plugins → + Add plugin** and enter:
 
 ```
 github:wth373737/dsh-plugin-ollama-bridge
 ```
 
-**从本地目录**
+**From a local directory**
 
 ```bash
 pnpm add file:/path/to/dsh-plugin-ollama-bridge
 ```
 
-安装后重启 DSH。插件会出现在「插件 → 已安装插件」，标题为「本地 Ollama 桥」。
+Restart DSH after installing. The plugin appears under **Plugins → Installed plugins** as “本地 Ollama 桥”.
 
-## 配置
+## Configuration
 
-`cordis.patch.yml` 的 `config` 段：
+The `config` block of `cordis.patch.yml`:
 
 ```yaml
 baseURL: http://127.0.0.1:11434
@@ -52,36 +54,37 @@ concurrency: 2
 timeoutMs: 180000
 ```
 
-- `numCtx`：单块可用上下文，也是显存/内存的主要开销来源。
-- `concurrency`：并行请求数。单机建议 1–2，模型越大越要低。
-- Ollama 侧若模型不在默认目录，需设置环境变量 `OLLAMA_MODELS` 指向模型根目录。
+- `numCtx`: context available per chunk, and the main driver of memory use.
+- `concurrency`: parallel requests. 1–2 is sensible on one machine; lower it for larger models.
+- If Ollama keeps its models outside the default directory, set `OLLAMA_MODELS` to the model root.
 
-## 输出的可信度
+## How far to trust the output
 
-每条结果带三种状态之一，写进文件，也凭抽样返回：
+Every item carries one of three states, in the written file and in the returned sample:
 
-| 标签 | 含义 |
+| Label | Meaning |
 | --- | --- |
-| `ok` | 通过全部确定性校验，但**未被人工/主模型逐条复核** |
-| `*抽样待复核*` | 被抽中回传，由主模型逐条看过 |
-| `!!校验失败(原因)` | 形式不合规：空、超长、非 JSON、不在枚举内、缺必需子串、正则不匹配、疑似拒答 |
+| `ok` | Passed every deterministic check, but **not read one by one** |
+| `*抽样待复核*` | Sampled and returned; the leading model read it |
+| `!!校验失败(原因)` | Malformed: empty, too long, not JSON, outside the allowed choices, missing a required substring, regex miss, or refusing |
 
-确定性校验只保证**形式**，保证不了**语义**。批量结论必须区分「格式全部通过」和「内容正确」；抽样比例对小批量要调高（见 `sample_rate`）。
+Deterministic checks verify **form**, never **meaning**. Report “all items are well-formed” separately from “the content is correct”, and raise `sample_rate` for small batches.
 
-## 边界
+## Boundaries
 
-- **读**：任意绝对路径（由宿主进程权限决定）。
-- **写**：仅会话工作区内。越界请求直接拒绝并返回工作区根；解析不到工作区时拒绝写入而不是猜。
-- **网络**：只访问配置的 `baseURL`；`ollama_lookup` 经用户批准后才会调用宿主已配置的搜索服务。
-- **审批**：没有可用的提问服务时，`ollama_lookup` 直接拒绝联网，而不是静默跳过审批。
+- **Reads**: any absolute path the host process can read.
+- **Writes**: only inside the session workspace. A path outside it is refused with the workspace root in the message; an unresolvable workspace refuses the write rather than guessing.
+- **Network**: only the configured `baseURL`; `ollama_lookup` reaches the host's configured search provider only after the user approves.
+- **Approval**: with no answerer available, `ollama_lookup` refuses to look up instead of silently skipping approval.
 
-## 开发
+## Development
 
 ```bash
-npm test     # 离线冒烟测试：桩掉 fetch/web/userQuestions，校验检查/抽样/标注/写边界/审批门
+npm test     # offline smoke test: stubs fetch/web/userQuestions and checks
+             # verification, sampling, labels, write confinement, approval gate
 ```
 
-测试不需要 Ollama，也不会写入工作区之外。
+No Ollama needed, and nothing is written outside the workspace.
 
 ## License
 

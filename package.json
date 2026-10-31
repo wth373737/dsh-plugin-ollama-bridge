@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-ollama-bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Local Ollama worker tools for DeepSeek Harness: bulk long-text jobs with deterministic verification and sampling labels.",
   "type": "module",
@@ -16,7 +16,8 @@
     "LICENSE",
     "locale/*.json",
     "icon.svg",
-    "test"
+    "test",
+    "README.zh.md"
   ],
   "scripts": {
     "test": "node test/smoke.mjs"
