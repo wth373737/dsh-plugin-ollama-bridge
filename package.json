@@ -1,0 +1,43 @@
+{
+  "name": "dsh-plugin-ollama-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Ollama worker tools for DeepSeek Harness: bulk long-text jobs with deterministic verification and sampling labels.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "scripts": {
+    "test": "node test/smoke.mjs"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "ollama",
+    "local-llm",
+    "batch"
+  ],
+  "author": "wth373737",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wth373737/dsh-plugin-ollama-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wth373737/dsh-plugin-ollama-bridge/issues"
+  },
+  "homepage": "https://github.com/wth373737/dsh-plugin-ollama-bridge#readme"
+}

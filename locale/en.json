@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Ollama Bridge",
+    "description": "Runs bulk low-difficulty long-text jobs on a local Ollama model: deterministic checks on every item, a review sample back, and a labelled result file."
+  }
+}

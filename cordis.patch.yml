@@ -1,0 +1,8 @@
+- insert:
+    - id: ollama-bridge
+      name: dsh-plugin-ollama-bridge
+      config:
+        baseURL: http://127.0.0.1:11434
+        model: qwen2.5:7b
+        numCtx: 8192
+        concurrency: 2
