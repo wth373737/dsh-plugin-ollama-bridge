@@ -1,7 +1,6 @@
 {
   "name": "dsh-plugin-ollama-bridge",
-  "version": "0.2.1",
-  "private": true,
+  "version": "0.2.2",
   "description": "Local Ollama worker tools for DeepSeek Harness: bulk long-text jobs with deterministic verification and sampling labels.",
   "type": "module",
   "exports": {

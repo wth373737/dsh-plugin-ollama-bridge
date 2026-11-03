@@ -22,7 +22,7 @@ Hand the bulk low-difficulty long-text work to the Ollama models on this machine
 3. When metadata is not enough (benchmarks, known weaknesses), call `ollama_lookup` — it hands the exact queries to the user for approval, and returns `approved: false` without searching when they decline.
 4. Run `ollama_batch` with the chosen tag. An unknown tag fails immediately and names the installed models.
 
-`ollama_batch` returns only: item count, passed/failed, failure-reason counts, at most 20 failure snippets, and the 1–3% sample verbatim. The source text stays inside the plugin process.
+`ollama_batch` returns only: item count, passed/failed, failure-reason counts, at most 20 failure snippets, and a verbatim review sample (2% of the items by default, at least one and at most eight). The source text stays inside the plugin process.
 
 ## Install
 
